@@ -8,8 +8,18 @@ export default function SoundStudio({ onSwitchView }) {
   // holding state for the dropdowns - will wire to actual selection logic later
   const [happiest, setHappiest] = useState('1960s - Soul & Township Jazz');
   const [homeLocation, setHomeLocation] = useState('Durban');
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordTime, setRecordTime] = useState(0);
+
+
+ const [isRecording, setIsRecording] = useState(false);
+const [recordTime, setRecordTime] = useState(0);
+
+/*
+|--------------------------------------------------------------------------
+| Songstats Test State
+|--------------------------------------------------------------------------
+*/
+const [trackData, setTrackData] = useState(null);
+const [loadingTracklist, setLoadingTracklist] = useState(false);
 
   // basic timer logic - TODO: refactor this when we integrate real audio recording
   React.useEffect(() => {
@@ -25,10 +35,57 @@ export default function SoundStudio({ onSwitchView }) {
   };
 
   const handleStopRecording = () => {
-    setIsRecording(false);
-    // TODO: clean this up later when connecting the real backend
-  };
+  setIsRecording(false);
+  // TODO: clean this up later when connecting the real backend
+};
 
+const handleGenerateTracklist = async () => {
+  try {
+    setLoadingTracklist(true);
+
+    // =========================
+    // MEMORY ERA → SEARCH ARTIST
+    // =========================
+    const artistMap = {
+      "1940s": "Frank Sinatra",
+      "1950s": "Elvis Presley",
+      "1960s": "Miriam Makeba",
+      "1970s": "Bee Gees",
+      "1980s": "Michael Jackson",
+    };
+
+    const getEraKey = (val) => {
+      if (!val) return "1960s";
+
+      const match = val.match(/\d{4}s/);
+
+      return match ? match[0] : "1960s";
+    };
+
+    const eraKey = getEraKey(happiest);
+
+    const query =
+      artistMap[eraKey] ||
+      "Michael Jackson";
+
+    console.log("GENERATED QUERY:", query);
+
+    const response = await fetch(
+      `http://localhost:5000/api/songstats/search?q=${encodeURIComponent(query)}`
+    );
+
+    const data = await response.json();
+
+    console.log("SONGSTATS DATA:", data);
+
+    setTrackData(data);
+
+  } catch (error) {
+    console.error("Songstats Error:", error);
+  } finally {
+    setLoadingTracklist(false);
+  }
+};
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-32 sm:pb-40">
       {/* Header with branding and view toggle */}
@@ -96,12 +153,76 @@ export default function SoundStudio({ onSwitchView }) {
             </div>
 
             {/* generate tracklist button with icon */}
-            <button className="w-full px-6 sm:px-8 py-2.5 sm:py-3 bg-gradient-to-r from-pink-500 to-orange-500 hover:from-pink-600 hover:to-orange-600 text-white text-sm sm:text-base font-semibold rounded-lg transition transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2">
-              <span>Generate Tracklist</span>
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-            </button>
+<div>
+  <button
+    onClick={handleGenerateTracklist}
+    className="w-full px-6 sm:px-8 py-2.5 sm:py-3 bg-gradient-to-r from-pink-500 to-orange-500 hover:from-pink-600 hover:to-orange-600 text-white text-sm sm:text-base font-semibold rounded-lg transition transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2"
+  >
+    <span>
+      {loadingTracklist ? "Loading..." : "Generate Tracklist"}
+    </span>
+
+    <svg
+      className="w-5 h-5"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M13 10V3L4 14h7v7l9-11h-7z"
+      />
+    </svg>
+  </button>
+
+  {trackData && (
+    <div className="mt-4 p-4 rounded-lg bg-purple-900/40 border border-purple-600/30">
+
+      <h3 className="text-white font-bold mb-3">
+        Songstats Connected ✅
+      </h3>
+
+      <p className="text-gray-300">
+        <strong>Track:</strong> {trackData?.track_info?.title}
+      </p>
+
+      <p className="text-gray-300">
+        <strong>Artist:</strong> {trackData?.track_info?.artists?.[0]?.name}
+      </p>
+
+      <p className="text-gray-300">
+        <strong>Release Date:</strong> {trackData?.track_info?.release_date}
+      </p>
+
+      <p className="text-gray-300 mb-3">
+        <strong>Songstats ID:</strong> {trackData?.track_info?.songstats_track_id}
+      </p>
+
+      <div className="mt-3">
+        <h4 className="text-white font-semibold mb-2">
+          Top Insights
+        </h4>
+
+        <ul className="text-sm text-gray-300 space-y-1">
+          {trackData?.stats?.slice(0, 6)?.map((stat, i) => (
+            <li
+              key={i}
+              className="flex justify-between border-b border-purple-700/30 pb-1"
+            >
+              <span>{stat?.name || "Metric"}</span>
+              <span className="text-pink-300 font-medium">
+                {stat?.value ?? "N/A"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+    </div>
+  )}
+</div>
           </div>
         </section>
 
