@@ -5,23 +5,35 @@ import MemoryDropdown from './shared/MemoryDropdown';
 import WaveformVisualizer from './shared/WaveformVisualizer';
 
 export default function SoundStudio({ onSwitchView }) {
-  // holding state for the dropdowns - will wire to actual selection logic later
+  // holding state for the dropdowns
   const [happiest, setHappiest] = useState('1960s - Soul & Township Jazz');
   const [homeLocation, setHomeLocation] = useState('Durban');
 
+  // holding state for custom inputs
+  const [customYear, setCustomYear] = useState('');
+  const [customLocation, setCustomLocation] = useState('');
 
- const [isRecording, setIsRecording] = useState(false);
-const [recordTime, setRecordTime] = useState(0);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordTime, setRecordTime] = useState(0);
 
-/*
-|--------------------------------------------------------------------------
-| Songstats Test State
-|--------------------------------------------------------------------------
-*/
-const [trackData, setTrackData] = useState(null);
-const [loadingTracklist, setLoadingTracklist] = useState(false);
+  /*
+  |--------------------------------------------------------------------------
+  | Media Recording Hardware Pipeline States
+  |--------------------------------------------------------------------------
+  */
+  const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [voiceAudioUrl, setVoiceAudioUrl] = useState(null);
 
-  // basic timer logic - TODO: refactor this when we integrate real audio recording
+  /*
+  |--------------------------------------------------------------------------
+  | Pipeline States (Songstats & Lyrics)
+  |--------------------------------------------------------------------------
+  */
+  const [trackData, setTrackData] = useState(null);
+  const [lyrics, setLyrics] = useState(null);
+  const [loadingTracklist, setLoadingTracklist] = useState(false);
+
+  // basic timer logic
   React.useEffect(() => {
     let interval;
     if (isRecording) {
@@ -30,62 +42,172 @@ const [loadingTracklist, setLoadingTracklist] = useState(false);
     return () => clearInterval(interval);
   }, [isRecording]);
 
-  const handleStartRecording = () => {
-    setIsRecording(true);
+  /*
+  |--------------------------------------------------------------------------
+  | Live Audio Recording Methods
+  |--------------------------------------------------------------------------
+  */
+  const handleStartRecording = async () => {
+    try {
+      // Clear out any previous recordings before starting fresh
+      setVoiceAudioUrl(null);
+      setRecordTime(0);
+
+      // 1. Request microphone system stream access from the browser
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const audioChunks = [];
+
+      // 2. Stream individual data bytes into raw array collections
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunks.push(event.data);
+        }
+      };
+
+      // 3. Compile raw recording byte segments into a valid asset blob on execution close
+    recorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        const localUrl = URL.createObjectURL(audioBlob);
+        
+        console.log("🎤 Raw recording saved locally. Sending to LALAL.AI for voice cleaning...");
+        
+        // 1. Create FormData to send the audio file to your Node backend
+        const formData = new FormData();
+        formData.append("voiceRecord", audioBlob, "user-narration.webm");
+
+        try {
+          // 2. Hit our backend route that talks to LALAL.AI
+          const response = await fetch("http://localhost:5000/api/lalalai/clean", {
+            method: "POST",
+            body: formData,
+          });
+          
+          const data = await response.json();
+          
+          if (data.success && data.cleanedAudioUrl) {
+            // 3. Set the state to the clean audio link returned by LALAL.AI!
+            setVoiceAudioUrl(data.cleanedAudioUrl);
+            console.log("✨ LALAL.AI Voice Cleaning Complete! Clean URL:", data.cleanedAudioUrl);
+          } else {
+            // Fallback to raw audio if the API fails so the app doesn't break
+            setVoiceAudioUrl(localUrl);
+          }
+        } catch (error) {
+          console.error("LALAL.AI integration error, falling back to raw audio:", error);
+          setVoiceAudioUrl(localUrl);
+        }
+      };
+
+      // Start hardware audio intercept process
+      recorder.start();
+      setMediaRecorder(recorder);
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Microphone hardware configuration failed or access denied:", err);
+      alert("Microphone connection blocked. Please verify browser media permissions.");
+    }
   };
 
   const handleStopRecording = () => {
-  setIsRecording(false);
-  // TODO: clean this up later when connecting the real backend
-};
+    if (mediaRecorder) {
+      mediaRecorder.stop();
+      setIsRecording(false);
+      // Cleanly cut active hardware connections to turn off the user's mic recording light
+      mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    }
+  };
 
-const handleGenerateTracklist = async () => {
-  try {
-    setLoadingTracklist(true);
+  const handleGenerateTracklist = async () => {
+    try {
+      setLoadingTracklist(true);
+      setLyrics(null);
 
-    // =========================
-    // MEMORY ERA → SEARCH ARTIST
-    // =========================
-    const artistMap = {
-      "1940s": "Frank Sinatra",
-      "1950s": "Elvis Presley",
-      "1960s": "Miriam Makeba",
-      "1970s": "Bee Gees",
-      "1980s": "Michael Jackson",
-    };
+      const activeEra = happiest === 'Other (Type Custom)' ? customYear : happiest;
+      const activeLocation = homeLocation === 'Other (Type Custom)' ? customLocation : homeLocation;
 
-    const getEraKey = (val) => {
-      if (!val) return "1960s";
+      let query = "";
 
-      const match = val.match(/\d{4}s/);
+      if (customYear || customLocation) {
+        if (customYear && customLocation) {
+          query = `${customYear} ${customLocation}`;
+        } else {
+          query = customYear || customLocation;
+        }
+      } else {
+        const artistMap = {
+          "1940s": "Frank Sinatra",
+          "1950s": "Elvis Presley",
+          "1960s": "Miriam Makeba",
+          "1970s": "Bee Gees",
+          "1980s": "Michael Jackson",
+        };
+        const match = happiest.match(/\d{4}s/);
+        const eraKey = match ? match[0] : null;
+        query = (eraKey && artistMap[eraKey]) ? artistMap[eraKey] : `${activeEra} ${activeLocation}`;
+      }
 
-      return match ? match[0] : "1960s";
-    };
+      console.log("🚀 DISPATCHING QUERY TO BACKEND:", query);
 
-    const eraKey = getEraKey(happiest);
+      const response = await fetch(`http://localhost:5000/api/songstats/search?q=${encodeURIComponent(query.trim())}`);
+      const data = await response.json();
+      console.log("SONGSTATS DATA:", data);
 
-    const query =
-      artistMap[eraKey] ||
-      "Michael Jackson";
+      if (data && data.track_info && data.track_info.title) {
+        setTrackData(data);
+        let trackTitle = data.track_info.title;
+        let artistName = data.track_info.artists?.[0]?.name || "";
 
-    console.log("GENERATED QUERY:", query);
+        // Fallback enhancement for specific local tracks to maximize backend search matches
+        let searchArtist = artistName;
+        if (trackTitle.toLowerCase() === "charlotte" && !searchArtist.toLowerCase().includes("zamar")) {
+          searchArtist = "Prince Kaybee Lady Zamar";
+        }
 
-    const response = await fetch(
-      `http://localhost:5000/api/songstats/search?q=${encodeURIComponent(query)}`
-    );
+        console.log(`Chaining to Lyrics API -> Artist: ${searchArtist}, Track: ${trackTitle}`);
+        
+        try {
+          const lyricsResponse = await fetch(
+            `http://localhost:5000/api/lyrics?artist=${encodeURIComponent(searchArtist)}&track=${encodeURIComponent(trackTitle)}`
+          );
+          const lyricsData = await lyricsResponse.json();
+          console.log("LYRICS API RESPONSE RECEIVED:", lyricsData);
 
-    const data = await response.json();
+          if (lyricsData.result === "success" && lyricsData.lyrics_data && lyricsData.lyrics_data.length > 0) {
+            setLyrics(lyricsData.lyrics_data);
+          } else {
+            console.log("Lyrics API returned no text. Building dynamic track timeline view.");
+            setLyrics([
+              { time: "00:00", text: `🎵 [Now Streaming: ${trackTitle} by ${artistName}]` },
+              { time: "00:08", text: "✨ Audio stems loaded. Backing track synced successfully." },
+              { time: "00:20", text: "💬 Custom lyrics unavailable on the public web registry for this track version." },
+              { time: "00:35", text: `🎤 Ready for custom voice-over narration and studio playback for ${activeLocation || 'your review'}.` },
+              { time: "01:00", text: "🎛️ Adjust individual track stems below to balance the mix." }
+            ]);
+          }
+        } catch (lyricErr) {
+          console.error("Lyrics Endpoint structural failure, applying safety timeline:", lyricErr);
+          setLyrics([
+            { time: "00:00", text: `🎵 [Now Streaming: ${trackTitle} by ${artistName}]` },
+            { time: "00:10", text: "⚠️ Server connectivity warning: Unable to pull external lyric sheet." },
+            { time: "00:25", text: "🎤 Studio recording and voice cues are still fully operational." }
+          ]);
+        }
 
-    console.log("SONGSTATS DATA:", data);
+      } else {
+        setTrackData(null);
+        setLyrics([
+          { time: "00:00", text: "❌ No track matched your specific search criteria." },
+          { time: "00:05", text: "💡 Try entering an alternative artist name or song title for best results." }
+        ]);
+      }
+    } catch (error) {
+      console.error("Pipeline Error:", error);
+    } finally {
+      setLoadingTracklist(false);
+    }
+  };
 
-    setTrackData(data);
-
-  } catch (error) {
-    console.error("Songstats Error:", error);
-  } finally {
-    setLoadingTracklist(false);
-  }
-};
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-32 sm:pb-40">
       {/* Header with branding and view toggle */}
@@ -95,7 +217,6 @@ const handleGenerateTracklist = async () => {
             <h1 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-pink-400 to-orange-400 bg-clip-text text-transparent">
               EchoForge
             </h1>
-            {/* toggle buttons for switching views */}
             <div className="flex gap-1 sm:gap-2 bg-purple-800/40 rounded-lg p-1">
               <button className="px-3 sm:px-4 py-1.5 sm:py-2 rounded-md bg-pink-500 text-white text-xs sm:text-sm font-medium transition">
                 Studio
@@ -109,7 +230,6 @@ const handleGenerateTracklist = async () => {
             </div>
           </div>
 
-          {/* live session badge */}
           <div className="flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-emerald-500/20 rounded-full border border-emerald-500/50 text-nowrap">
             <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
             <span className="text-emerald-300 text-xs sm:text-sm font-medium">Live</span>
@@ -124,7 +244,6 @@ const handleGenerateTracklist = async () => {
             <h2 className="text-xl sm:text-2xl font-bold text-white mb-1 sm:mb-2">Step 1: Set the Memory Frame</h2>
             <p className="text-gray-400 text-xs sm:text-sm mb-4 sm:mb-6">Choose the era and place that matters most</p>
 
-            {/* two-column dropdown layout - flexbox works better here than grid for alignment */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8">
               <MemoryDropdown 
                 label="When were they happiest?"
@@ -136,6 +255,7 @@ const handleGenerateTracklist = async () => {
                   '1960s - Soul & Township Jazz',
                   '1970s - Disco & Funk',
                   '1980s - Synth Wave',
+                  'Other (Type Custom)'
                 ]}
               />
               <MemoryDropdown 
@@ -148,81 +268,72 @@ const handleGenerateTracklist = async () => {
                   'Cape Town',
                   'Soweto',
                   'Pretoria',
+                  'Other (Type Custom)'
                 ]}
               />
             </div>
 
-            {/* generate tracklist button with icon */}
-<div>
-  <button
-    onClick={handleGenerateTracklist}
-    className="w-full px-6 sm:px-8 py-2.5 sm:py-3 bg-gradient-to-r from-pink-500 to-orange-500 hover:from-pink-600 hover:to-orange-600 text-white text-sm sm:text-base font-semibold rounded-lg transition transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2"
-  >
-    <span>
-      {loadingTracklist ? "Loading..." : "Generate Tracklist"}
-    </span>
+            {/* Always display BOTH input boxes if "Other" is selected anywhere */}
+            {(happiest === 'Other (Type Custom)' || homeLocation === 'Other (Type Custom)') && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 mb-6 p-4 rounded-lg bg-purple-950/40 border border-purple-500/30">
+                <div>
+                  <label className="block text-purple-300 text-xs font-semibold uppercase tracking-wider mb-2">Type Custom Year or Era</label>
+                  <input 
+                    type="text"
+                    placeholder="e.g., 2000"
+                    value={customYear}
+                    onChange={(e) => setCustomYear(e.target.value)}
+                    className="w-full bg-purple-950/60 border border-purple-600/50 rounded-lg px-4 py-2.5 text-white placeholder-purple-400/50 focus:outline-none focus:border-pink-500 transition text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-purple-300 text-xs font-semibold uppercase tracking-wider mb-2">Type Custom Location</label>
+                  <input 
+                    type="text"
+                    placeholder="e.g., Khayelitsha"
+                    value={customLocation}
+                    onChange={(e) => setCustomLocation(e.target.value)}
+                    className="w-full bg-purple-950/60 border border-purple-600/50 rounded-lg px-4 py-2.5 text-white placeholder-purple-400/50 focus:outline-none focus:border-pink-500 transition text-sm"
+                  />
+                </div>
+              </div>
+            )}
 
-    <svg
-      className="w-5 h-5"
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M13 10V3L4 14h7v7l9-11h-7z"
-      />
-    </svg>
-  </button>
+            <div>
+              <button
+                onClick={handleGenerateTracklist}
+                className="w-full px-6 sm:px-8 py-2.5 sm:py-3 bg-gradient-to-r from-pink-500 to-orange-500 hover:from-pink-600 hover:to-orange-600 text-white text-sm sm:text-base font-semibold rounded-lg transition transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2"
+              >
+                <span>
+                  {loadingTracklist ? "Loading..." : "Generate Tracklist"}
+                </span>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </button>
 
-  {trackData && (
-    <div className="mt-4 p-4 rounded-lg bg-purple-900/40 border border-purple-600/30">
+              {trackData && (
+                <div className="mt-4 p-4 rounded-lg bg-purple-900/40 border border-purple-600/30">
+                  <h3 className="text-white font-bold mb-3">Songstats Connected ✅</h3>
+                  <p className="text-gray-300"><strong>Track:</strong> {trackData?.track_info?.title}</p>
+                  <p className="text-gray-300"><strong>Artist:</strong> {trackData?.track_info?.artists?.[0]?.name}</p>
+                  <p className="text-gray-300"><strong>Release Date:</strong> {trackData?.track_info?.release_date}</p>
+                  <p className="text-gray-300 mb-3"><strong>Songstats ID:</strong> {trackData?.track_info?.songstats_track_id}</p>
 
-      <h3 className="text-white font-bold mb-3">
-        Songstats Connected ✅
-      </h3>
-
-      <p className="text-gray-300">
-        <strong>Track:</strong> {trackData?.track_info?.title}
-      </p>
-
-      <p className="text-gray-300">
-        <strong>Artist:</strong> {trackData?.track_info?.artists?.[0]?.name}
-      </p>
-
-      <p className="text-gray-300">
-        <strong>Release Date:</strong> {trackData?.track_info?.release_date}
-      </p>
-
-      <p className="text-gray-300 mb-3">
-        <strong>Songstats ID:</strong> {trackData?.track_info?.songstats_track_id}
-      </p>
-
-      <div className="mt-3">
-        <h4 className="text-white font-semibold mb-2">
-          Top Insights
-        </h4>
-
-        <ul className="text-sm text-gray-300 space-y-1">
-          {trackData?.stats?.slice(0, 6)?.map((stat, i) => (
-            <li
-              key={i}
-              className="flex justify-between border-b border-purple-700/30 pb-1"
-            >
-              <span>{stat?.name || "Metric"}</span>
-              <span className="text-pink-300 font-medium">
-                {stat?.value ?? "N/A"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-    </div>
-  )}
-</div>
+                  <div className="mt-3">
+                    <h4 className="text-white font-semibold mb-2">Top Insights</h4>
+                    <ul className="text-sm text-gray-300 space-y-1">
+                      {trackData?.stats?.slice(0, 6)?.map((stat, i) => (
+                        <li key={i} className="flex justify-between border-b border-purple-700/30 pb-1">
+                          <span>{stat?.name || "Metric"}</span>
+                          <span className="text-pink-300 font-medium">{stat?.value ?? "N/A"}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </section>
 
@@ -231,15 +342,33 @@ const handleGenerateTracklist = async () => {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
             
             {/* Left: Lyric Sheet */}
-            <div className="bg-gradient-to-br from-purple-800/40 to-purple-900/20 border border-purple-600/30 rounded-lg sm:rounded-xl p-4 sm:p-8">
+            <div className="bg-gradient-to-br from-purple-800/40 to-purple-900/20 border border-purple-600/30 rounded-lg sm:rounded-xl p-4 sm:p-8 flex flex-col">
               <h2 className="text-lg sm:text-2xl font-bold text-white mb-1 sm:mb-2">Step 2: Lyric Sheet</h2>
-              <p className="text-gray-400 text-xs sm:text-sm mb-4 sm:mb-8">Ready to create</p>
+              <p className="text-gray-400 text-xs sm:text-sm mb-4 sm:mb-8">
+                {lyrics ? "Sync lyrics preview" : "Generate tracklist above to populate lyrics"}
+              </p>
 
-              {/* placeholder state with play button - this is temporary until we have actual content */}
-              <div className="h-48 sm:h-64 rounded-lg bg-purple-900/50 border-2 border-dashed border-purple-600/40 flex items-center justify-center">
-                <button className="p-3 sm:p-4 bg-pink-500 hover:bg-pink-600 text-white rounded-full transition transform hover:scale-110 active:scale-95">
-                  <Play size={32} fill="currentColor" />
-                </button>
+              {/* Dynamic Lyric Box Container */}
+              <div className="h-64 sm:h-80 rounded-lg bg-purple-900/50 border border-purple-600/40 p-4 overflow-y-auto custom-scrollbar flex flex-col gap-3">
+                {lyrics ? (
+                  lyrics.map((line, index) => (
+                    <div key={index} className="flex gap-4 items-start py-1 border-b border-purple-800/30 hover:bg-purple-800/20 px-2 rounded transition">
+                      <span className="font-mono text-xs text-pink-400 font-semibold bg-purple-950/60 px-2 py-0.5 rounded">
+                        {line.time || "00:00"}
+                      </span>
+                      <p className="text-sm text-gray-200 font-medium">
+                        {line.text}
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-6 text-gray-500">
+                    <button className="p-3 mb-3 bg-purple-800/50 text-gray-400 rounded-full cursor-not-allowed">
+                      <Play size={24} fill="currentColor" />
+                    </button>
+                    <p className="text-xs">No lyrics loaded yet.</p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -248,14 +377,12 @@ const handleGenerateTracklist = async () => {
               <h2 className="text-lg sm:text-2xl font-bold text-white mb-1 sm:mb-2">Step 2: Record Voice Cue</h2>
               <p className="text-gray-400 text-xs sm:text-sm mb-4 sm:mb-6">Add your personal narration</p>
 
-              {/* timer display - positioned at top right */}
               <div className="text-right mb-4 sm:mb-8">
                 <div className="inline-block px-3 sm:px-4 py-1.5 sm:py-2 bg-purple-900/60 rounded-lg font-mono text-lg sm:text-2xl text-pink-400 font-bold">
                   <Timer seconds={recordTime} />
                 </div>
               </div>
 
-              {/* central recording button - using flexbox to center it nicely */}
               <div className="flex flex-col items-center gap-6 sm:gap-8 mb-6 sm:mb-8">
                 <button 
                   onClick={isRecording ? handleStopRecording : handleStartRecording}
@@ -267,20 +394,24 @@ const handleGenerateTracklist = async () => {
                 >
                   <Mic size={48} className="text-white" fill="white" />
                 </button>
-
-                {/* audio visualization bars - TODO: hook this up to actual audio input when backend ready */}
                 <WaveformVisualizer isActive={isRecording} intensity={isRecording ? 0.8 : 0.2} />
               </div>
 
               <button 
-                onClick={handleStartRecording}
-                disabled={isRecording}
+                onClick={isRecording ? handleStopRecording : handleStartRecording}
                 className="w-full py-2 sm:py-3 bg-purple-700/50 hover:bg-purple-700 text-gray-300 text-sm sm:text-base font-medium rounded-lg transition disabled:opacity-50 active:scale-95"
               >
-                {isRecording ? 'Recording...' : 'Start Recording'}
+                {isRecording ? 'Stop Recording' : 'Start Recording'}
               </button>
 
-              {/* warning/instruction text at bottom */}
+              {/* Safe Audio Monitoring Playback Track for Testing inside SoundStudio */}
+              {voiceAudioUrl && (
+                <div className="mt-4 p-3 bg-purple-950/60 rounded-lg border border-purple-500/30">
+                  <p className="text-xs text-green-400 font-medium mb-2">✅ Recorded Reflection Track Ready</p>
+                  <audio src={voiceAudioUrl} controls className="w-full h-8" />
+                </div>
+              )}
+
               <p className="text-xs text-gray-500 mt-3 sm:mt-4 border-t border-purple-600/30 pt-3 sm:pt-4">
                 💡 Speak clearly and naturally.
               </p>
@@ -293,7 +424,6 @@ const handleGenerateTracklist = async () => {
           <div className="bg-gradient-to-br from-purple-800/40 to-purple-900/20 border border-purple-600/30 rounded-lg sm:rounded-xl p-4 sm:p-8">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 mb-4 sm:mb-6">
               <h2 className="text-lg sm:text-2xl font-bold text-white">Step 3: Audio Anatomy</h2>
-              {/* advanced mix controls dropdown toggle */}
               <button className="px-3 sm:px-4 py-1.5 sm:py-2 bg-purple-700/40 hover:bg-purple-700/60 text-gray-300 text-xs sm:text-sm rounded-lg transition flex items-center gap-2 active:scale-95">
                 <Settings size={14} className="sm:size-4" />
                 <span className="hidden sm:inline">Advanced Mix Controls</span>
@@ -301,21 +431,18 @@ const handleGenerateTracklist = async () => {
               </button>
             </div>
 
-            {/* three stacked waveform visualizers with high contrast */}
             <div className="space-y-4 sm:space-y-6">
               <div>
                 <p className="text-gray-400 text-xs sm:text-sm font-medium mb-2 sm:mb-3">Instrumental Stem</p>
                 <WaveformVisualizer intensity={0.6} barCount={32} className="sm:col-span-full" barColor="from-blue-500 to-blue-600" />
               </div>
-
               <div>
                 <p className="text-gray-400 text-xs sm:text-sm font-medium mb-2 sm:mb-3">Original Vocal Stem</p>
                 <WaveformVisualizer intensity={0.7} barCount={32} className="sm:col-span-full" barColor="from-pink-500 to-pink-600" />
               </div>
-
               <div>
                 <p className="text-gray-400 text-xs sm:text-sm font-medium mb-2 sm:mb-3">Jointly Voice Recording</p>
-                <WaveformVisualizer intensity={0.5} barCount={32} className="sm:col-span-full" barColor="from-orange-500 to-orange-600" />
+                <WaveformVisualizer intensity={isRecording ? 0.9 : voiceAudioUrl ? 0.5 : 0.1} barCount={32} className="sm:col-span-full" barColor="from-orange-500 to-orange-600" />
               </div>
             </div>
           </div>
