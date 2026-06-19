@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Mic, Play, Settings, Loader2 } from 'lucide-react';
 import Timer from './shared/Timer';
 import MemoryDropdown from './shared/MemoryDropdown';
@@ -10,13 +10,25 @@ export default function SoundStudio({ onSwitchView }) {
   const [isRecording, setIsRecording] = useState(false);
   const [recordTime, setRecordTime] = useState(0);
 
-  // --- NOLUTHANDO'S NEW STATE COORDINATION ---
+  // --- STATE COORDINATION ---
   const [isLoading, setIsLoading] = useState(false);
   const [trackInfo, setTrackInfo] = useState(null);
   const [lyricsData, setLyricsData] = useState(null);
   const [lyricsError, setLyricsError] = useState('');
 
-  React.useEffect(() => {
+  // --- AUDIO ISOLATION & PLAYBACK STATES ---
+  const [isCleaning, setIsCleaning] = useState(false);
+  const [cleanedAudioUrl, setCleanedAudioUrl] = useState(null);
+  const [isPlayingCleaned, setIsPlayingCleaned] = useState(false);
+  const [transcription, setTranscription] = useState('');
+
+  // --- HARDWARE REF TRACKING BOARDS ---
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const audioPlaybackRef = useRef(null);
+
+  // Handle the active counting clock for active recording durations
+  useEffect(() => {
     let interval;
     if (isRecording) {
       interval = setInterval(() => setRecordTime(prev => prev + 1), 1000);
@@ -24,18 +36,26 @@ export default function SoundStudio({ onSwitchView }) {
     return () => clearInterval(interval);
   }, [isRecording]);
 
-  // --- NOLUTHANDO'S HANDOFF PIPELINE (SONGSTATS ➡️ MUSIXMATCH) ---
+  // Cleanup active audio nodes if the screen unmounts mid-stream
+  useEffect(() => {
+    return () => {
+      if (audioPlaybackRef.current) {
+        audioPlaybackRef.current.pause();
+      }
+    };
+  }, []);
+
+  // --- HANDOFF PIPELINE (SONGSTATS ➡️ MUSIXMATCH) ---
   const handleGenerateTracklist = async () => {
     setIsLoading(true);
     setLyricsError('');
     setLyricsData(null);
-    setTrackInfo(null); // Clear previous track metadata during lookup
+    setTrackInfo(null);
     
     try {
       const searchQuery = `${happiest} ${homeLocation}`;
       console.log('Sending query to Songstats:', searchQuery);
-
-      // Step 1: Hit Charity's working Songstats backend search router
+      
       const songstatsResponse = await fetch(`http://localhost:5000/api/songstats/search?q=${encodeURIComponent(searchQuery)}`);
       const songstatsData = await songstatsResponse.json();
       console.log('Songstats raw payload returned:', songstatsData);
@@ -47,7 +67,6 @@ export default function SoundStudio({ onSwitchView }) {
         const mainArtist = fetchedTrack.artists?.[0]?.name || fetchedTrack.artists?.[0] || '';
         const mainTitle = fetchedTrack.title || '';
 
-        // Step 2: Handoff instantly to our Musixmatch endpoint setup inside backend/server.js
         if (mainArtist && mainTitle) {
           console.log(`Handoff to Musixmatch endpoint with Artist: ${mainArtist}, Track: ${mainTitle}`);
           
@@ -72,16 +91,101 @@ export default function SoundStudio({ onSwitchView }) {
     }
   };
 
-  const handleStartRecording = () => {
-    setIsRecording(true);
+  // --- HARDWARE RECORDING HANDLERS ---
+  const handleStartRecording = async () => {
+    audioChunksRef.current = [];
+    setRecordTime(0);
+    
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorderRef.current.onstop = async () => {
+        const rawAudioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        console.log("🎤 Recording captured. Deploying isolation stream to backend system...");
+        await sendAudioForIsolation(rawAudioBlob);
+      };
+
+      mediaRecorderRef.current.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Hardware Microphone Access Denied:", err);
+      alert("Microphone device permissions are missing or blocked.");
+    }
   };
 
   const handleStopRecording = () => {
-    setIsRecording(false);
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      setIsRecording(false);
+    }
+  };
+
+  // --- CONNECTIVITY NODE TO BACKEND ---
+  const sendAudioForIsolation = async (audioBlob) => {
+    setIsCleaning(true);
+    setCleanedAudioUrl(null);
+    setTranscription('');
+    
+    try {
+      const formData = new FormData();
+      formData.append("voiceRecord", audioBlob, "user-reflection.webm");
+
+      const response = await fetch("http://localhost:5000/api/elevenlabs/isolate", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server tracking status returned structural layout error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.success && data.cleanedAudioUrl) {
+        console.log("✨ [ElevenLabs Sync] High-fidelity isolated audio block set successfully.");
+        setCleanedAudioUrl(data.cleanedAudioUrl);
+        setTranscription(data.transcription || '');
+      } else {
+        console.error("Pipeline failure notice:", data.error);
+        setTranscription(data.transcription || '');
+        alert(`API Processing Warning: ${data.error || 'Unknown token failure'}`);
+      }
+    } catch (err) {
+      console.error("Isolation Flight Error Matrix Failure:", err);
+    } finally {
+      setIsCleaning(false);
+    }
+  };
+
+  const toggleCleanedAudioPlayback = () => {
+    if (!cleanedAudioUrl) return;
+
+    if (isPlayingCleaned) {
+      audioPlaybackRef.current.pause();
+      setIsPlayingCleaned(false);
+    } else {
+      if (audioPlaybackRef.current) {
+        audioPlaybackRef.current.pause();
+      }
+      audioPlaybackRef.current = new Audio(cleanedAudioUrl);
+      audioPlaybackRef.current.onended = () => setIsPlayingCleaned(false);
+      audioPlaybackRef.current.play();
+      setIsPlayingCleaned(true);
+    }
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-28 text-white">
+      {/* HEADER SECTION */}
       <header className="border-b border-purple-700/40 bg-purple-900/30 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-8">
@@ -108,6 +212,7 @@ export default function SoundStudio({ onSwitchView }) {
         </div>
       </header>
 
+      {/* MAIN LAYOUT */}
       <main className="max-w-7xl mx-auto px-6 py-8">
         {/* STEP 1: Set the Memory Frame */}
         <section className="mb-8">
@@ -173,24 +278,22 @@ export default function SoundStudio({ onSwitchView }) {
           </div>
         </section>
 
-        {/* STEP 2: Split layout - Lyric Sheet + Recording */}
+        {/* STEP 2: Split Layout - Lyric Sheet & Recording Panel */}
         <section className="mb-8">
           <div className="grid md:grid-cols-2 gap-6">
             
-            {/* Left: Lyric Sheet Container */}
+            {/* Left Box: Lyrics display logic */}
             <div className="bg-gradient-to-br from-purple-800/40 to-purple-900/20 border border-purple-600/30 rounded-xl p-8">
               <h2 className="text-2xl font-bold text-white mb-2">Step 2: Lyric Sheet</h2>
               <p className="text-gray-400 text-sm mb-4">Ready to create</p>
 
               <div className="h-64 rounded-lg bg-purple-900/50 border-2 border-dashed border-purple-600/40 p-6 overflow-y-auto custom-scrollbar flex flex-col justify-start">
                 {isLoading ? (
-                  /* 1. NEW LOADING STATE FIX: Show clear progress layout instead of hiding behind play button */
                   <div className="m-auto text-center space-y-2">
                     <Loader2 className="w-8 h-8 animate-spin text-pink-500 mx-auto" />
                     <p className="text-xs text-gray-300">Synchronizing pipeline audio stems...</p>
                   </div>
                 ) : lyricsData ? (
-                  /* 2. Render dynamic array text lines directly */
                   <div className="space-y-3 text-center my-auto">
                     {lyricsData.slice(0, 5).map((line, idx) => (
                       <p key={idx} className="text-gray-200 text-sm font-medium">
@@ -202,7 +305,6 @@ export default function SoundStudio({ onSwitchView }) {
                     </p>
                   </div>
                 ) : trackInfo ? (
-                  /* 3. Fallback Layout */
                   <div className="space-y-3 text-center my-auto">
                     <p className="text-pink-400 font-bold text-xs uppercase tracking-wider mb-1">Live Synced Subtitles</p>
                     <p className="text-gray-200 text-base font-semibold">Back in <span className="bg-[#FF6050] text-white px-1.5 py-0.5 rounded font-bold">1968</span> the radio stayed warm all night</p>
@@ -212,13 +314,11 @@ export default function SoundStudio({ onSwitchView }) {
                     </p>
                   </div>
                 ) : lyricsError ? (
-                  /* 4. Error Display State */
                   <div className="space-y-2 text-center my-auto p-2">
                     <p className="text-orange-400 text-sm font-semibold mb-1">⚠ API Resolution Notice</p>
                     <p className="text-gray-300 text-xs">{lyricsError}</p>
                   </div>
                 ) : (
-                  /* 5. Initial idle state */
                   <div className="m-auto text-center">
                     <button 
                       onClick={handleGenerateTracklist}
@@ -232,7 +332,7 @@ export default function SoundStudio({ onSwitchView }) {
               </div>
             </div>
 
-            {/* Right: Record Voice Cue */}
+            {/* Right Box: Audio Capture Panel */}
             <div className="bg-gradient-to-br from-purple-800/40 to-purple-900/20 border border-purple-600/30 rounded-xl p-8">
               <h2 className="text-2xl font-bold text-white mb-2">Step 2: Record Voice Cue</h2>
               <p className="text-gray-400 text-sm mb-6">Add your personal narration</p>
@@ -265,14 +365,24 @@ export default function SoundStudio({ onSwitchView }) {
                 {isRecording ? 'Stop Recording' : 'Start Recording'}
               </button>
 
+              <div className="mt-6 rounded-2xl border border-purple-600/40 bg-purple-950/40 p-4">
+                <h3 className="text-sm font-semibold text-white mb-2">Transcription</h3>
+                {transcription ? (
+                  <p className="text-gray-200 text-sm leading-6">{transcription}</p>
+                ) : (
+                  <p className="text-gray-500 text-sm">Your recorded voice cue transcription will appear here after isolation completes.</p>
+                )}
+              </div>
+
               <p className="text-xs text-gray-500 mt-4 border-t border-purple-600/30 pt-4">
                 💡 Speak clearly and naturally. This will be played back to help trigger memories.
               </p>
             </div>
+
           </div>
         </section>
 
-        {/* STEP 3: Audio Anatomy */}
+        {/* STEP 3: Audio Anatomy Stems Layout */}
         <section className="mb-8">
           <div className="bg-gradient-to-br from-purple-800/40 to-purple-900/20 border border-purple-600/30 rounded-xl p-8">
             <div className="flex items-center justify-between mb-6">
@@ -286,23 +396,54 @@ export default function SoundStudio({ onSwitchView }) {
             <div className="space-y-6">
               <div>
                 <p className="text-gray-400 text-sm font-medium mb-3">Instrumental Stem</p>
-                <WaveformVisualizer intensity={0.6} barCount={64} barColor="from-blue-500 to-blue-600" />
+                <WaveformVisualizer intensity={0.4} barCount={64} barColor="from-blue-500 to-blue-600" />
               </div>
 
               <div>
                 <p className="text-gray-400 text-sm font-medium mb-3">Original Vocal Stem</p>
-                <WaveformVisualizer intensity={0.7} barCount={64} barColor="from-pink-500 to-pink-600" />
+                <WaveformVisualizer intensity={0.3} barCount={64} barColor="from-pink-500 to-pink-600" />
               </div>
 
               <div>
-                <p className="text-gray-400 text-sm font-medium mb-3">Jointly Voice Recording</p>
-                <WaveformVisualizer intensity={0.5} barCount={64} barColor="from-orange-500 to-orange-600" />
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-gray-400 text-sm font-medium">Jointed Isolated Voice Recording (ElevenLabs Neural Engine)</p>
+                  {isCleaning && (
+                    <span className="text-xs text-pink-400 animate-pulse flex items-center gap-1">
+                      <Loader2 size={12} className="animate-spin" /> Stripping background environment artifacts...
+                    </span>
+                  )}
+                </div>
+                
+                <div className="flex items-center gap-4">
+                  <button
+                    disabled={!cleanedAudioUrl || isCleaning}
+                    onClick={toggleCleanedAudioPlayback}
+                    className={`p-3 rounded-lg text-white font-medium flex items-center gap-2 transition ${
+                      cleanedAudioUrl 
+                        ? 'bg-emerald-600 hover:bg-emerald-500 transform hover:scale-105' 
+                        : 'bg-purple-900/40 text-gray-500 cursor-not-allowed'
+                    }`}
+                  >
+                    <Play size={16} fill={cleanedAudioUrl ? "currentColor" : "none"} />
+                    {isPlayingCleaned ? 'Pause Preview' : 'Play Isolated Mix'}
+                  </button>
+                  
+                  <div className="flex-1">
+                    <WaveformVisualizer 
+                      isActive={isPlayingCleaned} 
+                      intensity={isPlayingCleaned ? 0.75 : 0.1} 
+                      barCount={54} 
+                      barColor={cleanedAudioUrl ? "from-emerald-400 to-teal-500" : "from-purple-800 to-purple-900"} 
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </section>
       </main>
 
+      {/* FOOTER MASTER TRACK ACTION BAR */}
       <footer className="fixed bottom-0 left-0 right-0 border-t border-purple-700/40 bg-purple-900/80 backdrop-blur-lg">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <p className="text-gray-400 text-sm">

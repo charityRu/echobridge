@@ -23,6 +23,7 @@ export default function SoundStudio({ onSwitchView }) {
   */
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [voiceAudioUrl, setVoiceAudioUrl] = useState(null);
+  const [transcription, setTranscription] = useState('');
 
   /*
   |--------------------------------------------------------------------------
@@ -69,16 +70,17 @@ export default function SoundStudio({ onSwitchView }) {
     recorder.onstop = async () => {
         const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
         const localUrl = URL.createObjectURL(audioBlob);
+        setTranscription('');
         
-        console.log("🎤 Raw recording saved locally. Sending to LALAL.AI for voice cleaning...");
+        console.log("🎤 Raw recording saved locally. Sending to ElevenLabs for voice isolation...");
         
         // 1. Create FormData to send the audio file to your Node backend
         const formData = new FormData();
         formData.append("voiceRecord", audioBlob, "user-narration.webm");
 
         try {
-          // 2. Hit our backend route that talks to LALAL.AI
-          const response = await fetch("http://localhost:5000/api/lalalai/clean", {
+          // 2. Hit our backend route that talks to ElevenLabs
+          const response = await fetch("http://localhost:5000/api/elevenlabs/isolate", {
             method: "POST",
             body: formData,
           });
@@ -86,15 +88,17 @@ export default function SoundStudio({ onSwitchView }) {
           const data = await response.json();
           
           if (data.success && data.cleanedAudioUrl) {
-            // 3. Set the state to the clean audio link returned by LALAL.AI!
+            // 3. Set the state to the isolated audio link returned by ElevenLabs
             setVoiceAudioUrl(data.cleanedAudioUrl);
-            console.log("✨ LALAL.AI Voice Cleaning Complete! Clean URL:", data.cleanedAudioUrl);
+            setTranscription(data.transcription || '');
+            console.log("✨ ElevenLabs isolation complete. Clean URL:", data.cleanedAudioUrl);
           } else {
             // Fallback to raw audio if the API fails so the app doesn't break
             setVoiceAudioUrl(localUrl);
+            setTranscription(data.transcription || '');
           }
         } catch (error) {
-          console.error("LALAL.AI integration error, falling back to raw audio:", error);
+          console.error("ElevenLabs integration error, falling back to raw audio:", error);
           setVoiceAudioUrl(localUrl);
         }
       };
@@ -405,6 +409,15 @@ export default function SoundStudio({ onSwitchView }) {
               </button>
 
               {/* Safe Audio Monitoring Playback Track for Testing inside SoundStudio */}
+              <div className="mt-6 rounded-2xl border border-purple-600/40 bg-purple-950/40 p-4">
+                <h3 className="text-sm font-semibold text-white mb-2">Transcription</h3>
+                {transcription ? (
+                  <p className="text-gray-200 text-sm leading-6">{transcription}</p>
+                ) : (
+                  <p className="text-gray-500 text-sm">Your recorded voice cue transcription will appear here after isolation completes.</p>
+                )}
+              </div>
+
               {voiceAudioUrl && (
                 <div className="mt-4 p-3 bg-purple-950/60 rounded-lg border border-purple-500/30">
                   <p className="text-xs text-green-400 font-medium mb-2">✅ Recorded Reflection Track Ready</p>
