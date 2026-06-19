@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Play, Settings } from 'lucide-react';
 import Timer from './shared/Timer';
 import MemoryDropdown from './shared/MemoryDropdown';
@@ -24,15 +24,29 @@ export default function SoundStudio({ onSwitchView }) {
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [voiceAudioUrl, setVoiceAudioUrl] = useState(null);
   const [transcription, setTranscription] = useState('');
+  const [showAdvancedMix, setShowAdvancedMix] = useState(false);
+  const [instrumentalVol, setInstrumentalVol] = useState(0.7);
+  const [vocalVol, setVocalVol] = useState(0.8);
+  const [masterVol, setMasterVol] = useState(1.0);
+  const audioPlaybackRef = useRef(null);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Pipeline States (Songstats & Lyrics)
-  |--------------------------------------------------------------------------
-  */
   const [trackData, setTrackData] = useState(null);
   const [lyrics, setLyrics] = useState(null);
   const [loadingTracklist, setLoadingTracklist] = useState(false);
+
+  const mixAvailable = Boolean(trackData && voiceAudioUrl);
+
+  const resetMixSettings = () => {
+    setInstrumentalVol(0.7);
+    setVocalVol(0.8);
+    setMasterVol(1.0);
+  };
+
+  useEffect(() => {
+    if (audioPlaybackRef.current) {
+      audioPlaybackRef.current.volume = Math.min(1, masterVol * vocalVol);
+    }
+  }, [masterVol, vocalVol, voiceAudioUrl]);
 
   // basic timer logic
   React.useEffect(() => {
@@ -120,6 +134,17 @@ export default function SoundStudio({ onSwitchView }) {
       // Cleanly cut active hardware connections to turn off the user's mic recording light
       mediaRecorder.stream.getTracks().forEach(track => track.stop());
     }
+  };
+
+  const previewMix = () => {
+    if (!voiceAudioUrl) return;
+    if (audioPlaybackRef.current) {
+      audioPlaybackRef.current.pause();
+    }
+    audioPlaybackRef.current = new Audio(voiceAudioUrl);
+    audioPlaybackRef.current.volume = Math.min(1, masterVol * vocalVol);
+    audioPlaybackRef.current.onended = () => {};
+    audioPlaybackRef.current.play();
   };
 
   const handleGenerateTracklist = async () => {
@@ -437,12 +462,93 @@ export default function SoundStudio({ onSwitchView }) {
           <div className="bg-gradient-to-br from-purple-800/40 to-purple-900/20 border border-purple-600/30 rounded-lg sm:rounded-xl p-4 sm:p-8">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 mb-4 sm:mb-6">
               <h2 className="text-lg sm:text-2xl font-bold text-white">Step 3: Audio Anatomy</h2>
-              <button className="px-3 sm:px-4 py-1.5 sm:py-2 bg-purple-700/40 hover:bg-purple-700/60 text-gray-300 text-xs sm:text-sm rounded-lg transition flex items-center gap-2 active:scale-95">
+              <button
+                onClick={() => setShowAdvancedMix(!showAdvancedMix)}
+                className={`px-3 sm:px-4 py-1.5 sm:py-2 bg-purple-700/40 hover:bg-purple-700/60 text-gray-300 text-xs sm:text-sm rounded-lg transition flex items-center gap-2 active:scale-95 ${showAdvancedMix ? 'bg-pink-500 text-white' : ''}`}
+              >
                 <Settings size={14} className="sm:size-4" />
                 <span className="hidden sm:inline">Advanced Mix Controls</span>
                 <span className="sm:hidden">Mix</span>
               </button>
             </div>
+
+            {showAdvancedMix && (
+              <div className="mb-6 space-y-4">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <span className="text-xs text-gray-300">Preview the current mix using the latest vocal recording and mix settings.</span>
+                  <button
+                    type="button"
+                    onClick={previewMix}
+                    disabled={!mixAvailable}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs rounded-lg transition disabled:opacity-50"
+                  >
+                    Preview Mix
+                  </button>
+                </div>
+
+                <div className="p-4 bg-purple-950/80 border border-purple-500/30 rounded-xl grid md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-blue-400 block mb-2 uppercase tracking-wider">Instrumental Volume</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={instrumentalVol}
+                      onChange={(e) => setInstrumentalVol(parseFloat(e.target.value))}
+                      className="w-full accent-blue-500 bg-purple-900/60 rounded-lg appearance-none h-2"
+                      disabled={!mixAvailable}
+                    />
+                    <span className="text-xs text-gray-400 mt-1 block text-right">{(instrumentalVol * 100).toFixed(0)}%</span>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-pink-400 block mb-2 uppercase tracking-wider">Vocal Volume</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={vocalVol}
+                      onChange={(e) => setVocalVol(parseFloat(e.target.value))}
+                      className="w-full accent-pink-500 bg-purple-900/60 rounded-lg appearance-none h-2"
+                      disabled={!mixAvailable}
+                    />
+                    <span className="text-xs text-gray-400 mt-1 block text-right">{(vocalVol * 100).toFixed(0)}%</span>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-emerald-400 block mb-2 uppercase tracking-wider">Master Volume</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={masterVol}
+                      onChange={(e) => setMasterVol(parseFloat(e.target.value))}
+                      className="w-full accent-emerald-500 bg-purple-900/60 rounded-lg appearance-none h-2"
+                      disabled={!mixAvailable}
+                    />
+                    <span className="text-xs text-gray-400 mt-1 block text-right">{(masterVol * 100).toFixed(0)}%</span>
+                  </div>
+
+                  <div className="md:col-span-3 border-t border-purple-800/60 pt-4 mt-3">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs text-purple-300 font-semibold uppercase tracking-wider">Mix Status</p>
+                        <p className="text-gray-400 text-xs">{mixAvailable ? 'Song and recording are loaded. Use the sliders to fine-tune the mix.' : 'Load a song and complete a recording to enable mix controls.'}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={resetMixSettings}
+                        disabled={!mixAvailable}
+                        className="px-3 py-1.5 bg-purple-700/40 hover:bg-purple-700/60 text-gray-300 text-xs rounded-lg transition disabled:opacity-50"
+                      >
+                        Reset Mix
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-4 sm:space-y-6">
               <div>

@@ -22,10 +22,33 @@ export default function SoundStudio({ onSwitchView }) {
   const [isPlayingCleaned, setIsPlayingCleaned] = useState(false);
   const [transcription, setTranscription] = useState('');
 
+  // --- AUDIO ANATOMY DYNAMIC TRACKING STATE ---
+  const [rawVocalUrl, setRawVocalUrl] = useState(null);
+
+  // --- ADVANCED AUDIO MIX CONTROL STATES ---
+  const [showAdvancedMix, setShowAdvancedMix] = useState(false);
+  const [instrumentalVol, setInstrumentalVol] = useState(0.7);
+  const [vocalVol, setVocalVol] = useState(0.8);
+  const [masterVol, setMasterVol] = useState(1.0);
+
   // --- HARDWARE REF TRACKING BOARDS ---
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const audioPlaybackRef = useRef(null);
+
+  const mixAvailable = Boolean(trackInfo && (rawVocalUrl || cleanedAudioUrl));
+
+  const resetMixSettings = () => {
+    setInstrumentalVol(0.7);
+    setVocalVol(0.8);
+    setMasterVol(1.0);
+  };
+
+  useEffect(() => {
+    if (audioPlaybackRef.current) {
+      audioPlaybackRef.current.volume = Math.min(1, masterVol * vocalVol);
+    }
+  }, [masterVol, vocalVol]);
 
   // Handle the active counting clock for active recording durations
   useEffect(() => {
@@ -95,6 +118,7 @@ export default function SoundStudio({ onSwitchView }) {
   const handleStartRecording = async () => {
     audioChunksRef.current = [];
     setRecordTime(0);
+    setRawVocalUrl(null);
     
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -110,6 +134,11 @@ export default function SoundStudio({ onSwitchView }) {
       mediaRecorderRef.current.onstop = async () => {
         const rawAudioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         console.log("🎤 Recording captured. Deploying isolation stream to backend system...");
+        
+        // Expose direct stream object natively to run the original vocal anatomy layout stream
+        const localVoiceObjectUrl = URL.createObjectURL(rawAudioBlob);
+        setRawVocalUrl(localVoiceObjectUrl);
+
         await sendAudioForIsolation(rawAudioBlob);
       };
 
@@ -177,6 +206,7 @@ export default function SoundStudio({ onSwitchView }) {
         audioPlaybackRef.current.pause();
       }
       audioPlaybackRef.current = new Audio(cleanedAudioUrl);
+      audioPlaybackRef.current.volume = Math.min(1, masterVol * vocalVol);
       audioPlaybackRef.current.onended = () => setIsPlayingCleaned(false);
       audioPlaybackRef.current.play();
       setIsPlayingCleaned(true);
@@ -322,7 +352,7 @@ export default function SoundStudio({ onSwitchView }) {
                   <div className="m-auto text-center">
                     <button 
                       onClick={handleGenerateTracklist}
-                      className="p-4 bg-pink-500 hover:bg-pink-600 text-white rounded-full transition transform hover:scale-110 mb-2 inline-block"
+                      className="p-4 bg-pink-500 hover:bg-pink-600 text-white rounded-full transition transform scale-110 mb-2 inline-block"
                     >
                       <Play size={32} fill="currentColor" />
                     </button>
@@ -385,23 +415,99 @@ export default function SoundStudio({ onSwitchView }) {
         {/* STEP 3: Audio Anatomy Stems Layout */}
         <section className="mb-8">
           <div className="bg-gradient-to-br from-purple-800/40 to-purple-900/20 border border-purple-600/30 rounded-xl p-8">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-white">Step 3: Audio Anatomy</h2>
-              <button className="px-4 py-2 bg-purple-700/40 hover:bg-purple-700/60 text-gray-300 text-sm rounded-lg transition flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-white">Step 3: Audio Anatomy</h2>
+                <p className="text-gray-400 text-sm mt-1">Balance the background track and voice cue after choosing a song and recording.</p>
+              </div>
+              <button 
+                onClick={() => setShowAdvancedMix(!showAdvancedMix)}
+                className={`px-4 py-2 text-sm rounded-lg transition flex items-center gap-2 ${
+                  showAdvancedMix 
+                    ? 'bg-pink-500 text-white shadow-lg shadow-pink-500/30' 
+                    : 'bg-purple-700/40 hover:bg-purple-700/60 text-gray-300'
+                }`}
+              >
                 <Settings size={16} />
                 Advanced Mix Controls
               </button>
             </div>
 
+            {/* SLIDE-DOWN MIX PANEL */}
+            {showAdvancedMix && (
+              <div className="mb-8 p-6 bg-purple-950/80 border border-purple-500/30 rounded-xl grid md:grid-cols-3 gap-6">
+                <div>
+                  <label className="text-xs font-semibold text-blue-400 block mb-2 uppercase tracking-wider">Instrumental</label>
+                  <input 
+                    type="range" min="0" max="1" step="0.05" 
+                    value={instrumentalVol} 
+                    onChange={(e) => setInstrumentalVol(parseFloat(e.target.value))}
+                    className="w-full accent-blue-500 bg-purple-900/60 rounded-lg appearance-none h-2"
+                    disabled={!mixAvailable}
+                  />
+                  <span className="text-xs text-gray-400 mt-1 block text-right">{(instrumentalVol * 100).toFixed(0)}%</span>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-pink-400 block mb-2 uppercase tracking-wider">Vocal Cue</label>
+                  <input 
+                    type="range" min="0" max="1" step="0.05" 
+                    value={vocalVol} 
+                    onChange={(e) => setVocalVol(parseFloat(e.target.value))}
+                    className="w-full accent-pink-500 bg-purple-900/60 rounded-lg appearance-none h-2"
+                    disabled={!mixAvailable}
+                  />
+                  <span className="text-xs text-gray-400 mt-1 block text-right">{(vocalVol * 100).toFixed(0)}%</span>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-emerald-400 block mb-2 uppercase tracking-wider">Master</label>
+                  <input 
+                    type="range" min="0" max="1" step="0.05" 
+                    value={masterVol} 
+                    onChange={(e) => setMasterVol(parseFloat(e.target.value))}
+                    className="w-full accent-emerald-500 bg-purple-900/60 rounded-lg appearance-none h-2"
+                    disabled={!mixAvailable}
+                  />
+                  <span className="text-xs text-gray-400 mt-1 block text-right">{(masterVol * 100).toFixed(0)}%</span>
+                </div>
+
+                {/* DEBUG LINK INSPECTOR */}
+                <div className="md:col-span-3 border-t border-purple-800/60 pt-4 mt-2">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="space-y-1">
+                      <h4 className="text-xs font-bold text-purple-300 uppercase tracking-wider">Live Mix Status</h4>
+                      <p className="text-gray-400 text-xs">{mixAvailable ? 'Ready to fine-tune the mix.' : 'Record and load a song first.'}</p>
+                    </div>
+                    <button
+                      onClick={resetMixSettings}
+                      disabled={!mixAvailable}
+                      className="px-3 py-1.5 bg-purple-700/40 hover:bg-purple-700/60 text-gray-300 text-xs rounded-lg transition disabled:opacity-50"
+                    >
+                      Reset Mix
+                    </button>
+                  </div>
+                  <div className="grid gap-1 font-mono text-[11px] text-gray-400 bg-black/30 p-3 rounded-lg mt-4">
+                    <p><span className="text-pink-400">Raw Vocal Object Link:</span> {rawVocalUrl ? rawVocalUrl : '🔴 Empty (Awaiting Mic Stream Stop)'}</p>
+                    <p><span className="text-emerald-400">ElevenLabs Output Base64:</span> {cleanedAudioUrl ? `${cleanedAudioUrl.substring(0, 60)}...` : '🔴 Empty (Awaiting Backend Payload)'}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* WAVEFORMS CONTAINER */}
             <div className="space-y-6">
               <div>
                 <p className="text-gray-400 text-sm font-medium mb-3">Instrumental Stem</p>
-                <WaveformVisualizer intensity={0.4} barCount={64} barColor="from-blue-500 to-blue-600" />
+                <WaveformVisualizer isActive={trackInfo !== null} intensity={trackInfo ? (0.4 * instrumentalVol) : 0.1} barCount={64} barColor="from-blue-500 to-blue-600" />
               </div>
 
               <div>
                 <p className="text-gray-400 text-sm font-medium mb-3">Original Vocal Stem</p>
-                <WaveformVisualizer intensity={0.3} barCount={64} barColor="from-pink-500 to-pink-600" />
+                <WaveformVisualizer 
+                  isActive={isRecording || rawVocalUrl !== null} 
+                  intensity={isRecording ? (0.8 * vocalVol) : rawVocalUrl ? (0.3 * vocalVol) : 0.1} 
+                  barCount={64} 
+                  barColor="from-pink-500 to-pink-600" 
+                />
               </div>
 
               <div>
@@ -420,7 +526,7 @@ export default function SoundStudio({ onSwitchView }) {
                     onClick={toggleCleanedAudioPlayback}
                     className={`p-3 rounded-lg text-white font-medium flex items-center gap-2 transition ${
                       cleanedAudioUrl 
-                        ? 'bg-emerald-600 hover:bg-emerald-500 transform hover:scale-105' 
+                        ? 'bg-emerald-600 hover:bg-emerald-500 transform scale-105 shadow-md shadow-emerald-600/20' 
                         : 'bg-purple-900/40 text-gray-500 cursor-not-allowed'
                     }`}
                   >
@@ -431,7 +537,7 @@ export default function SoundStudio({ onSwitchView }) {
                   <div className="flex-1">
                     <WaveformVisualizer 
                       isActive={isPlayingCleaned} 
-                      intensity={isPlayingCleaned ? 0.75 : 0.1} 
+                      intensity={isPlayingCleaned ? (0.75 * masterVol) : 0.1} 
                       barCount={54} 
                       barColor={cleanedAudioUrl ? "from-emerald-400 to-teal-500" : "from-purple-800 to-purple-900"} 
                     />
@@ -449,7 +555,7 @@ export default function SoundStudio({ onSwitchView }) {
           <p className="text-gray-400 text-sm">
             ✓ All changes saved automatically
           </p>
-          <button className="px-8 py-3 bg-gradient-to-r from-pink-500 to-orange-500 hover:from-pink-600 hover:to-orange-600 text-white font-semibold rounded-lg transition transform hover:scale-105">
+          <button className="px-8 py-3 bg-gradient-to-r from-pink-500 to-orange-500 hover:from-pink-600 hover:to-orange-600 text-white font-semibold rounded-lg transition transform scale-105">
             Save Master
           </button>
         </div>
