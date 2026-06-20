@@ -68,52 +68,72 @@ export default function SoundStudio({ onSwitchView }) {
     };
   }, []);
 
-  // --- HANDOFF PIPELINE (SONGSTATS ➡️ MUSIXMATCH) ---
-  const handleGenerateTracklist = async () => {
-    setIsLoading(true);
-    setLyricsError('');
-    setLyricsData(null);
-    setTrackInfo(null);
-    
-    try {
-      const searchQuery = `${happiest} ${homeLocation}`;
-      console.log('Sending query to Songstats:', searchQuery);
-      
-      const songstatsResponse = await fetch(`http://localhost:5000/api/songstats/search?q=${encodeURIComponent(searchQuery)}`);
-      const songstatsData = await songstatsResponse.json();
-      console.log('Songstats raw payload returned:', songstatsData);
+ // --- HANDOFF PIPELINE (SONGSTATS ➡️ MUSIXMATCH) ---
+const handleGenerateTracklist = async () => {
+  setIsLoading(true);
+  setLyricsError('');
+  setLyricsData(null);
+  setTrackInfo(null);
 
-      if (songstatsData.result === 'success' && songstatsData.track_info) {
-        const fetchedTrack = songstatsData.track_info;
-        setTrackInfo(fetchedTrack);
+  try {
+    // TEMPORARY: hardcoded working Songstats query
+    const songstatsResponse = await fetch(
+      "http://localhost:5000/api/songstats/search?q=purple"
+    );
 
-        const mainArtist = fetchedTrack.artists?.[0]?.name || fetchedTrack.artists?.[0] || '';
-        const mainTitle = fetchedTrack.title || '';
+    const songstatsData = await songstatsResponse.json();
 
-        if (mainArtist && mainTitle) {
-          console.log(`Handoff to Musixmatch endpoint with Artist: ${mainArtist}, Track: ${mainTitle}`);
-          
-          const lyricsResponse = await fetch(`http://localhost:5000/api/lyrics?artist=${encodeURIComponent(mainArtist)}&track=${encodeURIComponent(mainTitle)}`);
-          const lyricsResult = await lyricsResponse.json();
-          console.log('Musixmatch raw payload returned:', lyricsResult);
+    console.log("Songstats raw payload returned:", songstatsData);
 
-          if (lyricsResult.result === 'success') {
-            setLyricsData(lyricsResult.lyrics_data);
-          } else {
-            setLyricsError(lyricsResult.message || 'Synced lines not available.');
-          }
-        }
-      } else {
-        setLyricsError(songstatsData.message || 'Could not find matching context track on Songstats.');
-      }
-    } catch (err) {
-      console.error('Pipeline Execution Error:', err);
-      setLyricsError('Network layout failure reading APIs.');
-    } finally {
-      setIsLoading(false);
+    if (songstatsData.result !== "success") {
+      setLyricsError(songstatsData.message || "No tracks found");
+      return;
     }
-  };
 
+    const fetchedTrack = songstatsData.track_info;
+
+    console.log("✅ TRACK FOUND:", fetchedTrack);
+
+    setTrackInfo(fetchedTrack);
+
+    const mainArtist =
+      fetchedTrack.artists?.[0]?.name ||
+      fetchedTrack.artists?.[0] ||
+      "";
+
+    const mainTitle = fetchedTrack.title || "";
+
+    console.log(
+      `🎵 Fetching lyrics for ${mainArtist} - ${mainTitle}`
+    );
+
+    const lyricsResponse = await fetch(
+      `http://localhost:5000/api/lyrics?artist=${encodeURIComponent(
+        mainArtist
+      )}&track=${encodeURIComponent(mainTitle)}`
+    );
+
+    const lyricsResult = await lyricsResponse.json();
+
+    console.log("Musixmatch payload:", lyricsResult);
+
+    if (
+      lyricsResult.result === "success" &&
+      lyricsResult.lyrics_data
+    ) {
+      setLyricsData(lyricsResult.lyrics_data);
+    } else {
+      setLyricsError(
+        lyricsResult.message || "Lyrics not available."
+      );
+    }
+  } catch (err) {
+    console.error("Pipeline Execution Error:", err);
+    setLyricsError("Network layout failure reading APIs.");
+  } finally {
+    setIsLoading(false);
+  }
+};
   // --- HARDWARE RECORDING HANDLERS ---
   const handleStartRecording = async () => {
     audioChunksRef.current = [];
@@ -252,7 +272,7 @@ alert("Failed to save project");
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-8">
             <h1 className="text-3xl font-bold bg-gradient-to-r from-pink-400 to-orange-400 bg-clip-text text-transparent">
-              EchoForge test
+              EchoForge 
             </h1>
             <div className="flex gap-2 bg-purple-800/40 rounded-lg p-1">
               <button className="px-4 py-2 rounded-md bg-pink-500 text-white text-sm font-medium">
