@@ -1,14 +1,30 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Play, Pause } from 'lucide-react';
 
-export default function PatientView({ onSwitchView }) {
+const BACKUP_AUDIO_URLS = [
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+  'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+];
+
+export default function PatientView({ onSwitchView, initialMasterSession }) {
   const [isPlaying, setIsPlaying] = useState(false);
-  const [progress, setProgress] = useState(35);
+  const [progress, setProgress] = useState(0);
+  const [backgroundAudioEl, setBackgroundAudioEl] = useState(null);
+  const [overlayAudioEl, setOverlayAudioEl] = useState(null);
+  const [activeLyricIndex, setActiveLyricIndex] = useState(0);
+  const [overlayTriggered, setOverlayTriggered] = useState(false);
+  const lyricScrollRef = useRef(null);
+  const lyricLineRefs = useRef([]);
 
   // ================================
   // PROJECT STATE (from Save Master)
   // ================================
-  const [project, setProject] = useState(null);
+  const [project, setProject] = useState(initialMasterSession || null);
+
+  const safeBackgroundUrl =
+    initialMasterSession?.backgroundTrackUrl ||
+    initialMasterSession?.backupTrackUrls?.[0] ||
+    BACKUP_AUDIO_URLS[0];
 
   // ================================
   // LOAD + LIVE SYNC FIX
@@ -25,7 +41,9 @@ export default function PatientView({ onSwitchView }) {
       }
     };
 
-    loadProject();
+    if (!initialMasterSession) {
+      loadProject();
+    }
 
     // 🔥 live update listener (same tab + future updates)
     const handleUpdate = () => loadProject();
@@ -37,13 +55,144 @@ export default function PatientView({ onSwitchView }) {
       window.removeEventListener("storage", handleUpdate);
       window.removeEventListener("echoforge-update", handleUpdate);
     };
-  }, []);
+  }, [initialMasterSession]);
+
+  useEffect(() => {
+    return () => {
+      if (backgroundAudioEl) {
+        backgroundAudioEl.pause();
+      }
+      if (overlayAudioEl) {
+        overlayAudioEl.pause();
+      }
+    };
+  }, [backgroundAudioEl, overlayAudioEl]);
+
+  useEffect(() => {
+    if (!backgroundAudioEl) return;
+
+    const onTimeUpdate = () => {
+      if (backgroundAudioEl.duration > 0) {
+        const nextProgress = (backgroundAudioEl.currentTime / backgroundAudioEl.duration) * 100;
+        setProgress(nextProgress);
+
+        const timeline = project?.timelineLyrics || [];
+        if (timeline.length > 0) {
+          const currentSeconds = backgroundAudioEl.currentTime;
+          let matched = 0;
+          for (let i = 0; i < timeline.length; i += 1) {
+            if ((timeline[i]?.seconds ?? 0) <= currentSeconds) {
+              matched = i;
+            }
+          }
+          setActiveLyricIndex(matched);
+        }
+
+        if (
+          !overlayTriggered &&
+          nextProgress >= 50 &&
+          overlayAudioEl
+        ) {
+          overlayAudioEl.currentTime = 0;
+          overlayAudioEl.play().catch((err) => {
+            console.error('[EchoForge][Patient][OverlayPlayError]', err);
+          });
+          setOverlayTriggered(true);
+          console.log('[EchoForge][Patient][OverlayTrigger] Fired at >= 50% timeline progress.');
+        }
+      }
+    };
+
+    const onEnded = () => {
+      setIsPlaying(false);
+      setProgress(100);
+      setOverlayTriggered(false);
+      if (overlayAudioEl) {
+        overlayAudioEl.pause();
+        overlayAudioEl.currentTime = 0;
+      }
+    };
+
+    const onAudioError = () => {
+      console.warn('[EchoForge][Patient][BackgroundError] falling back to backup URL');
+      const backup = project?.backupTrackUrls?.[0] || BACKUP_AUDIO_URLS[0];
+      if (backgroundAudioEl.src !== backup) {
+        backgroundAudioEl.src = backup;
+        backgroundAudioEl.load();
+      }
+    };
+
+    backgroundAudioEl.addEventListener('timeupdate', onTimeUpdate);
+    backgroundAudioEl.addEventListener('ended', onEnded);
+    backgroundAudioEl.addEventListener('error', onAudioError);
+
+    return () => {
+      backgroundAudioEl.removeEventListener('timeupdate', onTimeUpdate);
+      backgroundAudioEl.removeEventListener('ended', onEnded);
+      backgroundAudioEl.removeEventListener('error', onAudioError);
+    };
+  }, [backgroundAudioEl, overlayAudioEl, overlayTriggered, project]);
+
+  useEffect(() => {
+    const activeLine = lyricLineRefs.current[activeLyricIndex];
+    if (activeLine) {
+      activeLine.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [activeLyricIndex]);
+
+  useEffect(() => {
+    const bgSource = project?.backgroundTrackUrl || project?.backupTrackUrls?.[0] || safeBackgroundUrl;
+    const vocalSource = project?.cleanedAudioUrl || project?.rawVocalUrl || null;
+
+    try {
+      const bg = new Audio(bgSource);
+      bg.volume = Math.min(1, (project?.mix?.masterVol ?? 1) * (project?.mix?.instrumentalVol ?? 0.7));
+      bg.preload = 'auto';
+      setBackgroundAudioEl(bg);
+
+      if (vocalSource) {
+        const overlay = new Audio(vocalSource);
+        overlay.volume = Math.min(1, (project?.mix?.masterVol ?? 1) * (project?.mix?.vocalVol ?? 0.8));
+        overlay.preload = 'auto';
+        setOverlayAudioEl(overlay);
+      } else {
+        setOverlayAudioEl(null);
+      }
+
+      console.log('[EchoForge][Patient][AudioInit]', {
+        hasBackground: Boolean(bgSource),
+        hasOverlay: Boolean(vocalSource),
+      });
+    } catch (err) {
+      console.error('[EchoForge][Patient][AudioInitError]', err);
+    }
+  }, [project, safeBackgroundUrl]);
 
   // ================================
   // PLAY STATE
   // ================================
   const handlePlayPause = () => {
-    setIsPlaying(prev => !prev);
+    try {
+      if (!backgroundAudioEl) {
+        setIsPlaying((prev) => !prev);
+        return;
+      }
+
+      if (isPlaying) {
+        backgroundAudioEl.pause();
+        if (overlayAudioEl) {
+          overlayAudioEl.pause();
+        }
+        setIsPlaying(false);
+      } else {
+        backgroundAudioEl.play().catch((err) => {
+          console.error('[EchoForge][Patient][BackgroundPlayError]', err);
+        });
+        setIsPlaying(true);
+      }
+    } catch (err) {
+      console.error('[EchoForge][Patient][PlayPauseError]', err);
+    }
   };
 
   // ================================
@@ -53,10 +202,25 @@ export default function PatientView({ onSwitchView }) {
     project?.trackInfo?.title || "Memory Session";
 
   const sessionYear =
-    project?.happiest?.match(/\d{4}/)?.[0] || "1968";
+    project?.happiest?.match(/\d{4}/)?.[0] || project?.customYear?.match(/\d{4}/)?.[0] || "1968";
 
   const genre =
     project?.happiest?.split(" - ")[1] || "Soul Classics";
+
+  const lyricsLines = project?.lyricsLines?.length
+    ? project.lyricsLines.slice(0, 4)
+    : [
+        `Back in ${sessionYear} the radio stayed warm all night`,
+        `${genre} wrapped around the room`,
+      ];
+
+  const timelineLines = project?.timelineLyrics?.length
+    ? project.timelineLyrics
+    : lyricsLines.map((line, idx) => ({
+        time: `${String(Math.floor((idx * 6) / 60)).padStart(2, '0')}:${String((idx * 6) % 60).padStart(2, '0')}`,
+        seconds: idx * 6,
+        text: line,
+      }));
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex flex-col">
@@ -109,6 +273,36 @@ export default function PatientView({ onSwitchView }) {
                 {' '}wrapped around the room
               </p>
 
+              <div
+                ref={lyricScrollRef}
+                className="mx-auto mt-2 max-h-[34vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-purple-500/20 bg-black/15 px-4 py-5 sm:px-6 sm:py-6 custom-scrollbar"
+              >
+                <div className="space-y-3 text-center">
+                  {timelineLines.map((line, idx) => {
+                    const isActiveLine = idx === activeLyricIndex;
+
+                    return (
+                      <p
+                        key={`${line.time}-${idx}`}
+                        ref={(element) => {
+                          lyricLineRefs.current[idx] = element;
+                        }}
+                        className={`mx-auto max-w-2xl rounded-xl px-3 py-2 text-sm sm:text-lg md:text-xl leading-relaxed transition-all duration-300 ${
+                          isActiveLine
+                            ? 'bg-pink-500/20 text-pink-200 shadow-lg shadow-pink-500/10 scale-[1.02]'
+                            : 'text-gray-400'
+                        }`}
+                      >
+                        <span className="block text-[10px] sm:text-xs uppercase tracking-[0.3em] text-gray-500 mb-1">
+                          {line.time}
+                        </span>
+                        <span>{line.text}</span>
+                      </p>
+                    );
+                  })}
+                </div>
+              </div>
+
             </div>
           </div>
 
@@ -134,7 +328,13 @@ export default function PatientView({ onSwitchView }) {
               min="0"
               max="100"
               value={progress}
-              onChange={(e) => setProgress(Number(e.target.value))}
+              onChange={(e) => {
+                const nextProgress = Number(e.target.value);
+                setProgress(nextProgress);
+                if (backgroundAudioEl && backgroundAudioEl.duration > 0) {
+                  backgroundAudioEl.currentTime = (nextProgress / 100) * backgroundAudioEl.duration;
+                }
+              }}
               className="w-full mt-2 opacity-0 h-8 cursor-pointer"
               style={{ position: 'relative', top: '-16px' }}
             />

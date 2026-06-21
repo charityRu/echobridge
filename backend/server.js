@@ -31,8 +31,18 @@ app.get("/api/songstats/search", async (req, res) => {
       headers: { apikey: process.env.SONGSTATS_API_KEY, Accept: "application/json" }
     });
 
-    const firstTrack = response.data?.results?.[0];
+    const results = response.data?.results || [];
+    const firstTrack = results[0];
     if (!firstTrack) return res.json({ result: "error", message: "No tracks found", track_info: null, stats: [] });
+
+    const trackOptions = results.slice(0, 10).map((item) => ({
+      title: item.title || "",
+      artists: item.artists || [],
+      release_date: item.release_date || "",
+      songstats_track_id: item.songstats_track_id || "",
+      avatar: item.avatar || "",
+      site_url: item.site_url || "",
+    }));
 
     return res.json({
       result: "success",
@@ -44,6 +54,7 @@ app.get("/api/songstats/search", async (req, res) => {
         avatar: firstTrack.avatar || "",
         site_url: firstTrack.site_url || "",
       },
+      track_options: trackOptions,
       stats: [
         { name: "Track ID", value: firstTrack.songstats_track_id || "N/A" },
         { name: "Release Date", value: firstTrack.release_date || "N/A" },
